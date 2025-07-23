@@ -1,0 +1,82 @@
+group = "com.devx.zebra_rfid_plugin"
+version = "1.0-SNAPSHOT"
+
+buildscript {
+    ext.kotlin_version = "2.1.0"
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.7.3")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        flatDir {
+            dirs("libs")
+        }
+    }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+android {
+    namespace = "com.devx.zebra_rfid_plugin"
+
+    compileSdk = 35
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_11
+    }
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+        test.java.srcDirs += "src/test/kotlin"
+    }
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    dependencies {
+        testImplementation("org.jetbrains.kotlin:kotlin-test")
+        testImplementation("org.mockito:mockito-core:5.0.0")
+        implementation 'androidx.appcompat:appcompat:1.6.1'
+
+        implementation(name: "API3_ASCII-release", ext: "aar")
+        implementation(name: "API3_CMN-release", ext: "aar")
+        implementation(name: "API3_INTERFACE-release", ext: "aar")
+        implementation(name: "API3_LLRP-release", ext: "aar")
+        implementation(name: "API3_NGE-protocolrelease", ext: "aar")
+        implementation(name: "API3_NGE-Transportrelease", ext: "aar")
+        implementation(name: "API3_NGEUSB-Transportrelease", ext: "aar")
+        implementation(name: "API3_READER-release", ext: "aar")
+        implementation(name: "API3_TRANSPORT-release", ext: "aar")
+        implementation(name: "rfidhostlib", ext: "aar")
+        implementation(name: "rfidseriallib", ext: "aar")
+    }
+
+    testOptions {
+        unitTests.all {
+            useJUnitPlatform()
+
+            testLogging {
+               events "passed", "skipped", "failed", "standardOut", "standardError"
+               outputs.upToDateWhen {false}
+               showStandardStreams = true
+            }
+        }
+    }
+}
