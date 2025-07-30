@@ -20,7 +20,7 @@ dependencies:
   zebra_rfid_plugin:
     path: ../
   cupertino_icons: ^1.0.8
-  permission_handler: ^11.0.1
+  logger: ^2.6.1
 
 dev_dependencies:
   integration_test:

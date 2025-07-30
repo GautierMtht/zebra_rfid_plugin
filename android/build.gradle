@@ -53,17 +53,19 @@ android {
     dependencies {
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.mockito:mockito-core:5.0.0")
-        implementation 'androidx.appcompat:appcompat:1.6.1'
 
-        implementation(name: "API3_ASCII-release", ext: "aar")
-        implementation(name: "API3_CMN-release", ext: "aar")
-        implementation(name: "API3_INTERFACE-release", ext: "aar")
-        implementation(name: "API3_LLRP-release", ext: "aar")
-        implementation(name: "API3_NGE-protocolrelease", ext: "aar")
-        implementation(name: "API3_NGE-Transportrelease", ext: "aar")
-        implementation(name: "API3_NGEUSB-Transportrelease", ext: "aar")
-        implementation(name: "API3_READER-release", ext: "aar")
-        implementation(name: "API3_TRANSPORT-release", ext: "aar")
+        implementation(name: "API3_ASCII-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_CMN-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_INTERFACE-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_LLRP-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_NGE-Transportrelease-2.0.4.190", ext: "aar")
+        implementation(name: "API3_NGE-protocolrelease-2.0.4.190", ext: "aar")
+        implementation(name: "API3_NGEUSB-Transportrelease-2.0.4.190", ext: "aar")
+        implementation(name: "API3_READER-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_TRANSPORT-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_ZIOTC-release-2.0.4.190", ext: "aar")
+        implementation(name: "API3_ZIOTCTRANSPORT-release-2.0.4.190", ext: "aar")
+        //implementation(name: "BarcodeScannerLibrary-release-17", ext: "aar")
         implementation(name: "rfidhostlib", ext: "aar")
         implementation(name: "rfidseriallib", ext: "aar")
     }
@@ -79,4 +81,8 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.16.0'
 }

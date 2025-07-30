@@ -8,6 +8,10 @@ class ZebraRfidPlugin {
     return result == true;
   }
 
+  static Future<String> getReaderName() async {
+    return await _channel.invokeMethod<String>('getReaderName') ?? 'Unknown';
+  }
+
   static Future<void> startRfid() async {
     await _channel.invokeMethod('startRfid');
   }
