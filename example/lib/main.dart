@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:logger/logger.dart';
 import 'package:zebra_rfid_plugin/zebra_rfid_plugin.dart';
 
@@ -32,23 +33,29 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
   String _readerName = 'Not Connected';
   String _status = 'Idle';
   bool _connected = false;
+  bool _isScanning = false;
 
   String _lastRfid = '-';
-  final String _lastBarcode = '-';
+  String _lastBarcode = '-';
 
   final List<_ScanItem> _rfidHistory = [];
   final List<_ScanItem> _barcodeHistory = [];
 
+  // Minimum power index for RFID reader
   static const int _minPowerIndex = 0;     
+  // Maximum power index for RFID reader
   static const int _maxPowerIndex = 300;   
-  double _powerSlider = 200;
+  // Current value of the power slider
+  double _powerSlider = 200;              
+  // Controller for the power input field
   final TextEditingController _powerCtrl =
-      TextEditingController(text: '200');
+      TextEditingController(text: '200');  
 
   @override
   void initState() {
     super.initState();
 
+  // Listen for RFID events
     ZebraRfidPlugin.setListener((data) {
       logger.i('RFID tag read: $data');
       final item = _ScanItem(type: ScanType.rfid, value: data, when: DateTime.now());
@@ -59,16 +66,16 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
       });
     });
 
-    // (Optionnal) Barcode events
-    // ZebraRfidPlugin.setBarcodeListener((data) {
-    //   logger.i('Barcode read: $data');
-    //   final item = _ScanItem(type: ScanType.barcode, value: data, when: DateTime.now());
-    //   setState(() {
-    //     _lastBarcode = data;
-    //     _barcodeHistory.insert(0, item);
-    //     _status = 'Barcode scanned';
-    //   });
-    // });
+  // (Optional) Listen for barcode events
+  // ZebraRfidPlugin.setBarcodeListener((data) {
+  //   logger.i('Barcode read: $data');
+  //   final item = _ScanItem(type: ScanType.barcode, value: data, when: DateTime.now());
+  //   setState(() {
+  //     _lastBarcode = data;
+  //     _barcodeHistory.insert(0, item);
+  //     _status = 'Barcode scanned';
+  //   });
+  // });
   }
 
   @override
@@ -94,14 +101,27 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
       } else {
         _error('No RFID reader found.');
       }
+    } on PlatformException catch (e) {
+      _error(_prettyError('Initialization failed', e));
     } catch (e, stack) {
       logger.e('Initialization failed', error: e, stackTrace: stack);
-      _error(_prettyError('Initialization failed', e));
+      _error('Initialization failed: $e');
     }
   }
 
-  Future<void> _startRfid() => _do('Start RFID', ZebraRfidPlugin.startRfid);
-  Future<void> _stopRfid() => _do('Stop RFID', ZebraRfidPlugin.stopRfid);
+  Future<void> _startRfid() async {
+    await _do('Start RFID', () async {
+      await ZebraRfidPlugin.startRfid();
+      setState(() => _isScanning = true);
+    });
+  }
+
+  Future<void> _stopRfid() async {
+    await _do('Stop RFID', () async {
+      await ZebraRfidPlugin.stopRfid();
+      setState(() => _isScanning = false);
+    });
+  }
 
   Future<void> _switchToRfid() =>
       _do('Switch to RFID', () => ZebraRfidPlugin.switchTriggerMode('rfid'));
@@ -112,7 +132,7 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
   Future<void> _applyPowerFromSlider() async {
     final idx = _powerSlider.round().clamp(_minPowerIndex, _maxPowerIndex);
     _powerCtrl.text = idx.toString();
-    await _setPower(idx);
+    await _setPowerSafely(idx);
   }
 
   Future<void> _applyPowerFromField() async {
@@ -123,11 +143,26 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
     }
     final idx = parsed.clamp(_minPowerIndex, _maxPowerIndex);
     setState(() => _powerSlider = idx.toDouble());
-    await _setPower(idx);
+    await _setPowerSafely(idx);
   }
 
-  Future<void> _setPower(int index) async {
-    await _do('Set Power ($index)', () => ZebraRfidPlugin.setPower(index));
+  Future<void> _setPowerSafely(int index) async {
+    final wasRunning = _isScanning;
+    await _do('Set Power ($index)', () async {
+      if (wasRunning) {
+        try {
+          await ZebraRfidPlugin.stopRfid();
+        } catch (_) {}
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
+
+      await ZebraRfidPlugin.setPower(index);
+
+      if (wasRunning) {
+        await Future.delayed(const Duration(milliseconds: 150));
+        await ZebraRfidPlugin.startRfid();
+      }
+    });
   }
 
   Future<void> _do(String label, Future<void> Function() action) async {
@@ -137,9 +172,13 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
       if (!mounted) return;
       _toast('$label done');
       setState(() => _status = '$label done');
+    } on PlatformException catch (e) {
+      // Typical case encountered: Operation In Progress / Command Not Allowed
+      final msg = _prettyError('Error during $label', e);
+      _error(msg);
     } catch (e, stack) {
       logger.e('Error during $label', error: e, stackTrace: stack);
-      _error(_prettyError('Error during $label', e));
+      _error('Error during $label: $e');
     }
   }
 
@@ -160,13 +199,17 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
     );
   }
 
-  String _prettyError(String prefix, Object err) {
-    final s = '$err';
-    if (s.toUpperCase().contains('REGION') && s.toUpperCase().contains('NOT')) {
+  String _prettyError(String prefix, PlatformException e) {
+    final s = (e.message ?? '').toUpperCase();
+    if (s.contains('REGION') && s.contains('NOT')) {
       return '$prefix: Region not set on reader.\n'
-          'Open 123RFID (Mobile/Desktop) or use MDM/StageNow to set regulatory region once.';
+          'Set it once via 123RFID (Mobile/Desktop) or StageNow/MDM, then try again.';
     }
-    return '$prefix: $err';
+    if (s.contains('OPERATION IN PROGRESS') || s.contains('COMMAND NOT ALLOWED')) {
+      return '$prefix: Reader is busy (inventory running). '
+          'We now stop inventory before changing power — reattempt and it should work.';
+    }
+    return '$prefix: ${e.message ?? e}';
   }
 
   @override
@@ -238,8 +281,9 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('RF Power (index)  •  Range: $_minPowerIndex – $_maxPowerIndex',
-            style: Theme.of(context).textTheme.titleMedium),
+    // Power controls for RFID reader
+    Text('RF Power (index)  •  Range: $_minPowerIndex – $_maxPowerIndex',
+      style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 12),
         Row(
           children: [
@@ -256,10 +300,11 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
             ),
             const SizedBox(width: 12),
             SizedBox(
-              width: 90,
+              width: 96,
               child: TextField(
                 controller: _powerCtrl,
                 keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: const InputDecoration(
                   labelText: 'Index',
                   border: OutlineInputBorder(),
@@ -278,8 +323,7 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
         ),
         const SizedBox(height: 6),
         Text(
-          'Tip: Power index is device-specific. RFD40 typically supports 0–300. '
-          'Your native plugin clamps out-of-range values.',
+          'Tip: RFD40 generally accepts 0–300. The native plugin rejects out-of-range values.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
@@ -354,6 +398,7 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
       itemBuilder: (ctx, i) {
         final it = items[i];
         return ListTile(
+          onTap: () => _showDetails(it),
           shape: RoundedRectangleBorder(
             side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
             borderRadius: BorderRadius.circular(10),
@@ -363,6 +408,58 @@ class _ZebraDashboardState extends State<ZebraDashboard> {
           ),
           title: Text(it.value, maxLines: 2, overflow: TextOverflow.ellipsis),
           subtitle: Text(_fmt(it.when)),
+          trailing: IconButton(
+            icon: const Icon(Icons.copy),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: it.value));
+              _toast('Copied');
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  void _showDetails(_ScanItem it) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(it.type == ScanType.rfid ? Icons.rss_feed : Icons.qr_code),
+                  const SizedBox(width: 8),
+                  Text(
+                    it.type == ScanType.rfid ? 'RFID Tag' : 'Barcode',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SelectableText(it.value, style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('When: ${_fmt(it.when)}', style: const TextStyle(color: Colors.grey)),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: it.value));
+                    Navigator.pop(context);
+                    _toast('Copied');
+                  },
+                  icon: const Icon(Icons.copy),
+                  label: const Text('Copy'),
+                ),
+              )
+            ],
+          ),
         );
       },
     );
