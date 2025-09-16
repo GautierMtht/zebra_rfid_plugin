@@ -38,13 +38,13 @@ class ZebraRfidPlugin :
   ActivityAware,
   IDcsSdkApiDelegate {
 
-  // ---- Flutter / Android glue ----
+  // ---- Flutter/Android integration and communication ----
   private lateinit var channel: MethodChannel
   private lateinit var appContext: Context
   private var activity: Activity? = null
   @Volatile private var isActivityAttached = false
 
-  // fallback lifecycle (MIUI / edge cases)
+  // Fallback lifecycle management for MIUI and other edge cases
   private var lifecycleRegistered = false
   private val lifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
     override fun onActivityCreated(a: Activity, savedInstanceState: Bundle?) {}
@@ -53,13 +53,13 @@ class ZebraRfidPlugin :
       activity = a
       isActivityAttached = true
       Log.d(TAG, "Activity (fallback) attached: ${a.localClassName}")
-      // si un init était en attente, on le reprend
+  // Resume any pending initialization if needed
       pendingInitResult?.let {
         val r = it
         pendingInitResult = null
         postMain { init(r) }
       }
-      // Fallback OEM : si une demande permissions est restée sans callback, tranche ici
+  // Fallback for OEMs: handle permission requests that did not return a callback
       postMain { settlePendingPermissionIfAny() }
     }
     override fun onActivityPaused(a: Activity) {}
@@ -74,45 +74,45 @@ class ZebraRfidPlugin :
     }
   }
 
-  // ---- RFID (API3) ----
+  // ---- Zebra RFID API3 integration ----
   private var readers: Readers? = null
   private var readerDevice: ReaderDevice? = null
   private var reader: RFIDReader? = null
   private var rfidListener: RfidEventsListener? = null
 
-  // Pré-sélection (depuis Dart via connectReader)
+  // Preferred reader selection (set from Dart via connectReader)
   private var preferredReaderAddress: String? = null
   private var preferredReaderName: String? = null
 
-  // ---- DataWedge (terminal barcode) ----
+  // ---- DataWedge integration (terminal barcode scanning) ----
   private var dataWedgeReceiver: BroadcastReceiver? = null
   private var isReceiverRegistered = false
   private val DW_PROFILE = "RFIDPluginProfile"
   private val DW_INTENT_ACTION = "com.devx.zebra_rfid_plugin.SCANNER"
   @Volatile private var dwPluginEnabled = false
 
-  // ---- Scanner Control SDK (sled barcode) ----
+  // ---- Scanner Control SDK (SCS) for sled barcode scanning ----
   private var sdkHandler: SDKHandler? = null
   private var activeScannerId: Int = -1
   @Volatile private var isSCSReady = false
 
-  // ---- États runtime ----
+  // ---- Runtime state flags ----
   @Volatile private var isActive = false
   @Volatile private var isInventoryRunning = false
   @Volatile private var isTriggerHeld = false
 
-  // ---- Pending results ----
+  // ---- Pending results for async operations ----
   private var pendingInitResult: MethodChannel.Result? = null
   private var pendingPermissionResult: MethodChannel.Result? = null
   @Volatile private var permissionRequestedByInit = false
 
-  // Pour mémoriser les permissions qu’on vient de demander (callback)
+  // Store permissions that were just requested (for callback tracking)
   private var lastRequestedPerms: Array<String>? = null
 
-  // ---- Init guard ----
+  // ---- Initialization guard ----
   @Volatile private var initInProgress = false
 
-  // ---- Prefs (pour savoir si une permission a déjà été demandée au moins une fois)
+  // ---- SharedPreferences: track if a permission has ever been requested ----
   private val PREFS = "zebra_rfid_plugin_prefs"
   private fun prefs(): SharedPreferences = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
   private fun hasBeenAsked(perm: String) = prefs().getBoolean("asked_$perm", false)
@@ -123,7 +123,7 @@ class ZebraRfidPlugin :
     e.apply()
   }
 
-  // ---- Anti-blocage (OEM ne renvoie pas le callback perms)
+  // ---- Anti-blocking: handle OEMs that do not return permission callbacks ----
   @Volatile private var pendingPermRequestEpoch: Long = 0L
   @Volatile private var pendingPermsInFlight: Boolean = false
 
@@ -136,7 +136,7 @@ class ZebraRfidPlugin :
     channel = MethodChannel(binding.binaryMessenger, "zebra_rfid_plugin")
     channel.setMethodCallHandler(this)
 
-    // Fallback lifecycle (si ActivityAware tarde)
+  // Register fallback lifecycle if ActivityAware is delayed
     (appContext.applicationContext as? Application)?.let { app ->
       if (!lifecycleRegistered) {
         app.registerActivityLifecycleCallbacks(lifecycleCallbacks)
@@ -145,13 +145,13 @@ class ZebraRfidPlugin :
       }
     }
 
-    // DataWedge profil + receiver
+  // Setup DataWedge profile and broadcast receiver
     setupDataWedgeProfile(initialScannerEnabled = false)
     dwSetTriggerControlMode("ignore")
     dwScannerPlugin(false)
     registerDataWedgeReceiverIfNeeded()
 
-    // Préparer SCS (sans session ouverte hors mode actif)
+  // Prepare SCS handler (no open session outside active mode)
     runOnMainAndWait { ensureSCSHandlerOnMain() }
   }
 
@@ -176,7 +176,7 @@ class ZebraRfidPlugin :
 
     binding.addRequestPermissionsResultListener { requestCode, _, _ ->
       if (requestCode == REQ_CODE && pendingPermissionResult != null) {
-        // Fin "normale" : on a bien reçu un callback
+  // Normal completion: callback received for permission request
         pendingPermsInFlight = false
         pendingPermRequestEpoch = 0L
 
@@ -185,7 +185,7 @@ class ZebraRfidPlugin :
         val fromInit = permissionRequestedByInit
         permissionRequestedByInit = false
 
-        // on note qu'on a effectivement demandé ces permissions
+  // Mark that these permissions have actually been requested
         markAsked(lastRequestedPerms)
         lastRequestedPerms = null
 
@@ -212,26 +212,26 @@ class ZebraRfidPlugin :
       } else false
     }
 
-    // (Reprise d’un init différé si besoin)
+  // Resume any deferred initialization if needed
     pendingInitResult?.let { res ->
       pendingInitResult = null
       postMain { init(res) }
     }
 
-    // Fallback OEM : si une demande permissions est restée sans callback, tranche ici
+  // Fallback for OEMs: handle permission requests that did not return a callback
     postMain { settlePendingPermissionIfAny() }
 
-    // ❌ Optionnel (désactivé) : éviter de déclencher automatiquement au démarrage sur MIUI
-    // if (!hasAllRequiredPermissions()) {
-    //   requestMissingPermissionsIfPossible(
-    //     object : MethodChannel.Result {
-    //       override fun success(o: Any?) {}
-    //       override fun error(code: String, msg: String?, details: Any?) {}
-    //       override fun notImplemented() {}
-    //     },
-    //     fromInit = false
-    //   )
-    // }
+  // Optionally: avoid triggering automatically on MIUI startup
+  // if (!hasAllRequiredPermissions()) {
+  //   requestMissingPermissionsIfPossible(
+  //     object : MethodChannel.Result {
+  //       override fun success(o: Any?) {}
+  //       override fun error(code: String, msg: String?, details: Any?) {}
+  //       override fun notImplemented() {}
+  //     },
+  //     fromInit = false
+  //   )
+  // }
   }
 
   override fun onDetachedFromActivity() {
@@ -265,7 +265,7 @@ class ZebraRfidPlugin :
         val args = call.arguments as? Map<*, *>
         preferredReaderAddress = (args?.get("address") as? String)?.normalizeBtAddr()
         preferredReaderName = args?.get("name") as? String
-        init(result) // re-init avec préférence
+  init(result) // re-initialize with preferred reader
       }
 
       "getReaderName" -> {
@@ -380,6 +380,9 @@ class ZebraRfidPlugin :
   }
 
   /** IMPORTANT : on ne considère "permanently denied" que si la permission a été demandée au moins une fois */
+  /**
+   * IMPORTANT: Only consider a permission "permanently denied" if it has been requested at least once.
+   */
   private fun isPermanentlyDeniedNow(perms: List<String>): Boolean {
     val host = activity ?: return false
     return perms.any { p ->

@@ -64,10 +64,11 @@ android {
 }
 
 dependencies {
-    // Support AndroidX requis par ActivityCompat
+
+    // AndroidX core library required for ActivityCompat and other support features
     implementation 'androidx.core:core:1.16.0'
 
-    // --- Zebra RFID API3 (depuis /libs) ---
+    // Zebra RFID API3 libraries (provided in /libs directory)
     implementation(name: 'API3_ASCII-release-2.0.4.190', ext: 'aar')
     implementation(name: 'API3_CMN-release-2.0.4.190', ext: 'aar')
     implementation(name: 'API3_INTERFACE-release-2.0.4.190', ext: 'aar')
@@ -80,10 +81,10 @@ dependencies {
     implementation(name: 'API3_ZIOTC-release-2.0.4.190', ext: 'aar')
     implementation(name: 'API3_ZIOTCTRANSPORT-release-2.0.4.190', ext: 'aar')
 
-    // --- Zebra Scanner Control SDK (SCS) : EXPOSER transitivement l'interface IDcsSdkApiDelegate ---
+    // Zebra Scanner Control SDK (SCS): exposes the IDcsSdkApiDelegate interface transitively
     api(name: 'BarcodeScannerLibrary-release-17', ext: 'aar')
 
-    // --- ASCII SDK (RFD8500) : INUTILES avec notre code actuel ---
+    // ASCII SDK (RFD8500): not used with current implementation
     // implementation(name: 'rfidhostlib', ext: 'aar')
     // implementation(name: 'rfidseriallib', ext: 'aar')
 

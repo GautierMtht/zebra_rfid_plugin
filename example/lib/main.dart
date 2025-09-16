@@ -27,31 +27,31 @@ class ZebraHome extends StatefulWidget {
 }
 
 class _ZebraHomeState extends State<ZebraHome> {
-  // Plugin singleton
+  /// Singleton instance of the ZebraRfidPlugin
   final ZebraRfidPlugin _plugin = ZebraRfidPlugin.instance;
 
-  // Connexion / état
+  /// Reader connection and state
   String _readerName = 'Not Connected';
   bool _connected = false;
 
-  // Mode & activité (start/stop)
+  /// Current mode and activity state (start/stop)
   ZebraPluginMode _mode = ZebraPluginMode.off;
   bool _active = false;
 
   String _status = 'Idle';
 
-  // Lectures récentes + historiques
+  /// Last scanned RFID and barcode values, and their histories
   String _lastRfid = '-';
   String _lastBarcode = '-';
   final List<_ScanItem> _rfidHistory = [];
   final List<_ScanItem> _barcodeHistory = [];
 
-  // Streams
+  /// Stream subscriptions for RFID, barcode, and disconnect events
   StreamSubscription<String>? _rfidSub;
   StreamSubscription<String>? _barcodeSub;
   StreamSubscription<void>? _discSub;
 
-  // Puissance RFID
+  /// RFID power control parameters
   static const int _minPowerIndex = 0;
   static const int _maxPowerIndex = 300;
   double _powerSlider = 200;
@@ -107,7 +107,7 @@ class _ZebraHomeState extends State<ZebraHome> {
     super.dispose();
   }
 
-  // ---------- Actions haut niveau ----------
+  // ---------- High-level actions ----------
 
   Future<void> _silentAutoInit() async {
     try {
@@ -127,9 +127,9 @@ class _ZebraHomeState extends State<ZebraHome> {
         });
       }
     } on PlatformException {
-      // silencieux pour l'auto-init
+      // Silently ignore errors during auto-init
     } catch (_) {
-      // silencieux
+      // Silently ignore errors
     }
   }
 
@@ -259,14 +259,15 @@ class _ZebraHomeState extends State<ZebraHome> {
 
   Future<List<_ReaderInfo>> _fetchReadersOnce() async {
     try {
-      final raw = await _plugin.listReaders();
-      return raw
-          .map((e) => _ReaderInfo(
-                name: (e['name'] ?? 'Unknown').toString(),
-                address: (e['address'] ?? '').toString(),
-                connected: e['connected'] == true,
-              ))
-          .toList();
+    final raw = await _plugin.listReaders();
+    // Map raw device info to strongly typed reader info
+    return raw
+      .map((e) => _ReaderInfo(
+        name: (e['name'] ?? 'Unknown').toString(),
+        address: (e['address'] ?? '').toString(),
+        connected: e['connected'] == true,
+        ))
+      .toList();
     } on PlatformException catch (e) {
       final msg = (e.message ?? '').toLowerCase();
       if (msg.contains('bluetooth_connect')) {
@@ -780,7 +781,7 @@ class _ZebraHomeState extends State<ZebraHome> {
   }
 }
 
-// ---------- Modèles/UI auxiliaires ----------
+// ---------- Data models and UI helpers ----------
 
 enum ScanType { rfid, barcode }
 
