@@ -20,10 +20,9 @@ void main() {
   });
 
   test('getPlatformVersion', () async {
-    ZebraRfidPlugin zebraRfidPlugin = ZebraRfidPlugin();
     MockZebraRfidPluginPlatform fakePlatform = MockZebraRfidPluginPlatform();
     ZebraRfidPluginPlatform.instance = fakePlatform;
 
-    expect(await zebraRfidPlugin.getPlatformVersion(), '42');
+    expect(await ZebraRfidPlugin.getPlatformVersion(), '42');
   });
 }
