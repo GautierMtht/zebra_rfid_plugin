@@ -1,13 +1,9 @@
 package com.devx.zebra_rfid_plugin
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
@@ -38,13 +34,13 @@ class ZebraRfidPlugin :
   ActivityAware,
   IDcsSdkApiDelegate {
 
-  // ---- Flutter/Android integration and communication ----
+  // ---- Flutter/Android
   private lateinit var channel: MethodChannel
   private lateinit var appContext: Context
   private var activity: Activity? = null
   @Volatile private var isActivityAttached = false
 
-  // Fallback lifecycle management for MIUI and other edge cases
+  // Fallback lifecycle (OEMs qui drop les callbacks)
   private var lifecycleRegistered = false
   private val lifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
     override fun onActivityCreated(a: Activity, savedInstanceState: Bundle?) {}
@@ -53,13 +49,11 @@ class ZebraRfidPlugin :
       activity = a
       isActivityAttached = true
       Log.d(TAG, "Activity (fallback) attached: ${a.localClassName}")
-  // Resume any pending initialization if needed
       pendingInitResult?.let {
         val r = it
         pendingInitResult = null
         postMain { init(r) }
       }
-  // Fallback for OEMs: handle permission requests that did not return a callback
       postMain { settlePendingPermissionIfAny() }
     }
     override fun onActivityPaused(a: Activity) {}
@@ -74,45 +68,36 @@ class ZebraRfidPlugin :
     }
   }
 
-  // ---- Zebra RFID API3 integration ----
+  // ---- Zebra RFID API3
   private var readers: Readers? = null
   private var readerDevice: ReaderDevice? = null
   private var reader: RFIDReader? = null
   private var rfidListener: RfidEventsListener? = null
 
-  // Preferred reader selection (set from Dart via connectReader)
+  // Preferred reader selection
   private var preferredReaderAddress: String? = null
   private var preferredReaderName: String? = null
 
-  // ---- DataWedge integration (terminal barcode scanning) ----
-  private var dataWedgeReceiver: BroadcastReceiver? = null
-  private var isReceiverRegistered = false
-  private val DW_PROFILE = "RFIDPluginProfile"
-  private val DW_INTENT_ACTION = "com.devx.zebra_rfid_plugin.SCANNER"
-  @Volatile private var dwPluginEnabled = false
-
-  // ---- Scanner Control SDK (SCS) for sled barcode scanning ----
+  // ---- Scanner Control SDK (SCS) – barcode sur sled RFID
   private var sdkHandler: SDKHandler? = null
   private var activeScannerId: Int = -1
   @Volatile private var isSCSReady = false
 
-  // ---- Runtime state flags ----
+  // ---- Runtime flags
   @Volatile private var isActive = false
   @Volatile private var isInventoryRunning = false
   @Volatile private var isTriggerHeld = false
 
-  // ---- Pending results for async operations ----
+  // ---- Pending results
   private var pendingInitResult: MethodChannel.Result? = null
   private var pendingPermissionResult: MethodChannel.Result? = null
   @Volatile private var permissionRequestedByInit = false
-
-  // Store permissions that were just requested (for callback tracking)
   private var lastRequestedPerms: Array<String>? = null
 
-  // ---- Initialization guard ----
+  // ---- Init guard
   @Volatile private var initInProgress = false
 
-  // ---- SharedPreferences: track if a permission has ever been requested ----
+  // ---- SharedPreferences
   private val PREFS = "zebra_rfid_plugin_prefs"
   private fun prefs(): SharedPreferences = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
   private fun hasBeenAsked(perm: String) = prefs().getBoolean("asked_$perm", false)
@@ -123,7 +108,7 @@ class ZebraRfidPlugin :
     e.apply()
   }
 
-  // ---- Anti-blocking: handle OEMs that do not return permission callbacks ----
+  // ---- Anti-blocking permission
   @Volatile private var pendingPermRequestEpoch: Long = 0L
   @Volatile private var pendingPermsInFlight: Boolean = false
 
@@ -136,28 +121,20 @@ class ZebraRfidPlugin :
     channel = MethodChannel(binding.binaryMessenger, "zebra_rfid_plugin")
     channel.setMethodCallHandler(this)
 
-  // Register fallback lifecycle if ActivityAware is delayed
+    // lifecycle fallback
     (appContext.applicationContext as? Application)?.let { app ->
       if (!lifecycleRegistered) {
         app.registerActivityLifecycleCallbacks(lifecycleCallbacks)
         lifecycleRegistered = true
-        Log.d(TAG, "Application lifecycle callbacks registered (fallback).")
       }
     }
 
-  // Setup DataWedge profile and broadcast receiver
-    setupDataWedgeProfile(initialScannerEnabled = false)
-    dwSetTriggerControlMode("ignore")
-    dwScannerPlugin(false)
-    registerDataWedgeReceiverIfNeeded()
-
-  // Prepare SCS handler (no open session outside active mode)
+    // Prépare SCS (sans établir de session tout de suite)
     runOnMainAndWait { ensureSCSHandlerOnMain() }
   }
 
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     channel.setMethodCallHandler(null)
-    unregisterDataWedgeReceiverIfNeeded()
     cleanupAll()
     (appContext.applicationContext as? Application)?.let { app ->
       if (lifecycleRegistered) {
@@ -176,7 +153,6 @@ class ZebraRfidPlugin :
 
     binding.addRequestPermissionsResultListener { requestCode, _, _ ->
       if (requestCode == REQ_CODE && pendingPermissionResult != null) {
-  // Normal completion: callback received for permission request
         pendingPermsInFlight = false
         pendingPermRequestEpoch = 0L
 
@@ -185,7 +161,6 @@ class ZebraRfidPlugin :
         val fromInit = permissionRequestedByInit
         permissionRequestedByInit = false
 
-  // Mark that these permissions have actually been requested
         markAsked(lastRequestedPerms)
         lastRequestedPerms = null
 
@@ -199,8 +174,6 @@ class ZebraRfidPlugin :
         } else {
           val missing = missingPermissions()
           val permanentlyDenied = isPermanentlyDeniedNow(missing)
-          Log.d(TAG, "permCheck missing=$missing permDenied=$permanentlyDenied asked=${missing.map{hasBeenAsked(it)}} " +
-             "rationale=${missing.map{ !ActivityCompat.shouldShowRequestPermissionRationale(activity!!, it) }}")
           val code = if (permanentlyDenied) "PERMISSION_PERMANENTLY_DENIED" else "PERMISSION_DENIED"
           val msg = if (permanentlyDenied)
             "Permissions denied with 'Don't ask again'. Open app settings to grant permissions."
@@ -212,26 +185,12 @@ class ZebraRfidPlugin :
       } else false
     }
 
-  // Resume any deferred initialization if needed
     pendingInitResult?.let { res ->
       pendingInitResult = null
       postMain { init(res) }
     }
 
-  // Fallback for OEMs: handle permission requests that did not return a callback
     postMain { settlePendingPermissionIfAny() }
-
-  // Optionally: avoid triggering automatically on MIUI startup
-  // if (!hasAllRequiredPermissions()) {
-  //   requestMissingPermissionsIfPossible(
-  //     object : MethodChannel.Result {
-  //       override fun success(o: Any?) {}
-  //       override fun error(code: String, msg: String?, details: Any?) {}
-  //       override fun notImplemented() {}
-  //     },
-  //     fromInit = false
-  //   )
-  // }
   }
 
   override fun onDetachedFromActivity() {
@@ -265,11 +224,12 @@ class ZebraRfidPlugin :
         val args = call.arguments as? Map<*, *>
         preferredReaderAddress = (args?.get("address") as? String)?.normalizeBtAddr()
         preferredReaderName = args?.get("name") as? String
-  init(result) // re-initialize with preferred reader
+        init(result) // re-init avec préférences
       }
 
       "getReaderName" -> {
-        result.success(reader?.hostName ?: readerDevice?.name ?: "Unknown Reader")
+        val name = reader?.hostName ?: readerDevice?.name
+        result.success(name ?: "RFID Reader")
       }
 
       "setMode" -> {
@@ -285,20 +245,25 @@ class ZebraRfidPlugin :
       "getMode" -> result.success(currentMode)
 
       "start" -> {
-        val r = reader
-        if (r?.isConnected == true) {
+        try {
           if (currentMode == "OFF") {
             result.error("MODE_OFF", "Select a mode before starting", null); return
           }
-          try {
-            isActive = true
-            applyBarcodeRoutingForCurrentMode()
-            result.success(true)
-          } catch (e: Exception) {
-            result.error("START_FAILED", e.localizedMessage, null)
+          // En mode RFID/BARCODE_RFID on exige un lecteur connecté
+          if (currentMode != "BARCODE" && reader?.isConnected != true) {
+            result.error("NOT_CONNECTED", "RFID reader not connected", null); return
           }
-        } else {
-          result.error("NOT_CONNECTED", "RFID reader not connected", null)
+          isActive = true
+
+          // Etablir session SCS si le mode inclut BARCODE
+          if (currentMode == "BARCODE" || currentMode == "BARCODE_RFID") {
+            runOnMainAndWait { ensureSCSHandlerOnMain(); scsEnsureSessionOnMain() }
+          }
+
+          applyRoutingForCurrentMode()
+          result.success(true)
+        } catch (e: Exception) {
+          result.error("START_FAILED", e.localizedMessage, null)
         }
       }
 
@@ -307,9 +272,6 @@ class ZebraRfidPlugin :
           isActive = false
           isTriggerHeld = false
           stopInventorySafe(reader)
-          setDataWedgeScannerInputEnabled(false)
-          dwSetTriggerControlMode("ignore")
-          dwScannerPlugin(false)
           runOnMainAndWait { scsTerminateSessionOnMain() }
           result.success(true)
         } catch (e: Exception) {
@@ -339,9 +301,6 @@ class ZebraRfidPlugin :
         try {
           isActive = false
           isTriggerHeld = false
-          setDataWedgeScannerInputEnabled(false)
-          dwSetTriggerControlMode("ignore")
-          dwScannerPlugin(false)
           cleanupAll()
           result.success(true)
         } catch (e: Exception) {
@@ -352,9 +311,6 @@ class ZebraRfidPlugin :
       "dispose" -> {
         isActive = false
         isTriggerHeld = false
-        setDataWedgeScannerInputEnabled(false)
-        dwSetTriggerControlMode("ignore")
-        dwScannerPlugin(false)
         cleanupAll()
         result.success(true)
       }
@@ -366,6 +322,7 @@ class ZebraRfidPlugin :
 
   //region Init & permissions
   private fun missingPermissions(): List<String> {
+    // pas de DataWedge -> pas de runtime perms additionnelles
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       listOf(
         Manifest.permission.BLUETOOTH_CONNECT,
@@ -379,16 +336,12 @@ class ZebraRfidPlugin :
     }
   }
 
-  /** IMPORTANT : on ne considère "permanently denied" que si la permission a été demandée au moins une fois */
-  /**
-   * IMPORTANT: Only consider a permission "permanently denied" if it has been requested at least once.
-   */
   private fun isPermanentlyDeniedNow(perms: List<String>): Boolean {
     val host = activity ?: return false
     return perms.any { p ->
       hasBeenAsked(p) &&
-      ActivityCompat.checkSelfPermission(appContext, p) != PackageManager.PERMISSION_GRANTED &&
-      !ActivityCompat.shouldShowRequestPermissionRationale(host, p)
+        ActivityCompat.checkSelfPermission(appContext, p) != PackageManager.PERMISSION_GRANTED &&
+        !ActivityCompat.shouldShowRequestPermissionRationale(host, p)
     }
   }
 
@@ -407,18 +360,14 @@ class ZebraRfidPlugin :
       return true
     }
 
-    // Une demande est déjà en cours ?
     if (pendingPermissionResult != null || pendingPermsInFlight) {
-      // Si elle traîne anormalement (OEM qui ne renvoie pas le callback), on la clôt proprement
       val stale = pendingPermRequestEpoch > 0 &&
-                  (SystemClock.elapsedRealtime() - pendingPermRequestEpoch) > 5000 // 5s
+        (SystemClock.elapsedRealtime() - pendingPermRequestEpoch) > 5000
       if (!stale) {
-        // On "rebranche" juste le result courant sur la demande en vol
         pendingPermissionResult = result
         permissionRequestedByInit = fromInit
         return true
       }
-      // Demande coincée : on avertit puis on relance proprement
       pendingPermissionResult?.error(
         "PERMISSION_REQUEST_STUCK",
         "Previous permission request did not return; retrying.",
@@ -429,7 +378,6 @@ class ZebraRfidPlugin :
       pendingPermRequestEpoch = 0L
     }
 
-    // Lance nouvelle demande
     pendingPermissionResult = result
     permissionRequestedByInit = fromInit
     lastRequestedPerms = missing.toTypedArray()
@@ -442,10 +390,8 @@ class ZebraRfidPlugin :
 
   private fun settlePendingPermissionIfAny() {
     val r = pendingPermissionResult ?: return
-    // On ne fait le fallback que si on avait vraiment lancé une demande
     if (!pendingPermsInFlight && pendingPermRequestEpoch == 0L) return
 
-    // On tranche selon l'état réel à la reprise (onResume)
     pendingPermsInFlight = false
     pendingPermRequestEpoch = 0L
 
@@ -458,8 +404,6 @@ class ZebraRfidPlugin :
     } else {
       val missing = missingPermissions()
       val permanentlyDenied = isPermanentlyDeniedNow(missing)
-      Log.d(TAG, "permCheck missing=$missing permDenied=$permanentlyDenied asked=${missing.map{hasBeenAsked(it)}} " +
-             "rationale=${missing.map{ !ActivityCompat.shouldShowRequestPermissionRationale(activity!!, it) }}")
       val code = if (permanentlyDenied) "PERMISSION_PERMANENTLY_DENIED" else "PERMISSION_DENIED"
       val msg = if (permanentlyDenied)
         "Permissions denied with 'Don't ask again'. Open app settings to grant permissions."
@@ -484,7 +428,6 @@ class ZebraRfidPlugin :
       return
     }
 
-    // Demande permissions si manquantes (et re-demande à chaque init)
     if (!hasAllRequiredPermissions()) {
       if (requestMissingPermissionsIfPossible(result, fromInit = true)) return
     }
@@ -500,14 +443,16 @@ class ZebraRfidPlugin :
   private fun initializeAll(result: MethodChannel.Result) {
     thread {
       try {
-        connectRfidBlockingWithBatchRecovery()
-        val r = reader ?: throw NoReaderException("No reader after connect")
-        configureRfid(r)
+        try {
+          connectRfidBlockingWithBatchRecovery()
+          reader?.let { configureRfid(it) }
+        } catch (e: NoReaderException) {
+          Log.i(TAG, "No RFID reader available; barcode will only work if sled is present.")
+        }
+
         runOnMainAndWait { ensureSCSHandlerOnMain() }
+
         postMain { result.success(true) }
-      } catch (e: NoReaderException) {
-        Log.w(TAG, "No reader: ${e.message}")
-        postMain { result.error("NO_READER", e.message, null) }
       } catch (e: OperationFailureException) {
         Log.e(TAG, "RFID connect failed: ${e.statusDescription}", e)
         val msg = e.vendorMessage ?: e.localizedMessage
@@ -538,7 +483,11 @@ class ZebraRfidPlugin :
     try { localReaders.Dispose() } catch (_: Exception) {}
     return mapped
   }
+  //endregion
 
+  //========================================================
+  //  Readers (API3) – connect + batch-mode recovery
+  //========================================================
   @Throws(Exception::class)
   private fun connectRfidBlockingWithBatchRecovery() {
     if (readers == null) {
@@ -546,7 +495,6 @@ class ZebraRfidPlugin :
       readers = Readers(ctx, ENUM_TRANSPORT.BLUETOOTH)
     }
 
-    // Enumération courte (retourne vite NO_READER si éteint)
     var list: ArrayList<ReaderDevice>? = null
     repeat(3) {
       list = try { readers?.GetAvailableRFIDReaderList() } catch (_: Exception) { null }
@@ -619,9 +567,33 @@ class ZebraRfidPlugin :
       handleBatchModeAfterConnect(r2)
     }
   }
-  //endregion
 
-  //region RFID config & events
+  private fun isBatchModeError(e: OperationFailureException): Boolean {
+    val s = (e.statusDescription ?: "") + " " + (e.vendorMessage ?: "")
+    val up = s.uppercase()
+    return up.contains("BATCHMODE") || up.contains("BATCH_MODE") || up.contains("RFID_BATCHMODE_IN_PROGRESS")
+  }
+
+  private fun handleBatchModeAfterConnect(r: RFIDReader) {
+    try {
+      try { r.Actions.Inventory.stop() } catch (_: Exception) {}
+      SystemClock.sleep(120)
+      try { r.Actions.getBatchedTags() } catch (_: Exception) {}
+      SystemClock.sleep(80)
+      try {
+        try { r.Actions.purgeTags() } catch (_: NoSuchMethodError) {
+          try { r.Actions.javaClass.getMethod("purgeBatchedTags").invoke(r.Actions) } catch (_: Exception) {}
+        }
+      } catch (_: Exception) {}
+      SystemClock.sleep(80)
+    } catch (ex: Exception) {
+      Log.w(TAG, "Batch-mode post-connect cleanup failed: ${ex.message}")
+    }
+  }
+
+  //========================================================
+  //  RFID config & events
+  //========================================================
   @Throws(InvalidUsageException::class, OperationFailureException::class)
   private fun configureRfid(r: RFIDReader) {
     val ti = TriggerInfo().apply {
@@ -645,8 +617,9 @@ class ZebraRfidPlugin :
         try {
           val tags = r.Actions.getReadTags(100)
           tags?.forEach { t ->
-            val epc = t.tagID
-            if (!epc.isNullOrEmpty()) postMain { channel.invokeMethod("onScan", epc) }
+            t.tagID?.let { epc ->
+              if (epc.isNotEmpty()) postMain { channel.invokeMethod("onScan", epc) }
+            }
           }
         } catch (ex: Exception) {
           Log.e(TAG, "read tags error", ex)
@@ -658,7 +631,7 @@ class ZebraRfidPlugin :
         when (d.statusEventType) {
           STATUS_EVENT_TYPE.HANDHELD_TRIGGER_EVENT -> {
             val ev = d.HandheldTriggerEventData.handheldEvent
-            Log.d(TAG, "Trigger: $ev (active=$isActive, running=$isInventoryRunning, mode=$currentMode, scs=${activeScannerId>0}, dw=$dwPluginEnabled)")
+            Log.d(TAG, "Trigger: $ev (active=$isActive, running=$isInventoryRunning, mode=$currentMode, scs=${activeScannerId>0})")
             when (ev) {
               HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED -> {
                 isTriggerHeld = true
@@ -683,9 +656,6 @@ class ZebraRfidPlugin :
             try { r.disconnect() } catch (_: Exception) {}
             reader = null; readerDevice = null
             isInventoryRunning = false; isActive = false; isTriggerHeld = false
-            setDataWedgeScannerInputEnabled(false)
-            dwSetTriggerControlMode("ignore")
-            dwScannerPlugin(false)
             runOnMainAndWait { scsTerminateSessionOnMain() }
           }
           else -> Unit
@@ -696,181 +666,30 @@ class ZebraRfidPlugin :
     r.Events.addEventsListener(listener)
   }
 
-  /** En mixte, on force RFID aussi. */
   private fun shouldStartRfidInventoryNow(): Boolean {
     return when (currentMode) {
       "RFID" -> true
       "BARCODE" -> false
-      "BARCODE_RFID" -> true  // lire RFID même si un chemin barcode existe
+      "BARCODE_RFID" -> true
       else -> false
     }
   }
-  //endregion
 
-  //region DataWedge
-  private fun setupDataWedgeProfile(initialScannerEnabled: Boolean) {
-    try {
-      val profile = Bundle().apply {
-        putString("PROFILE_NAME", DW_PROFILE)
-        putString("PROFILE_ENABLED", "true")
-        putString("CONFIG_MODE", "CREATE_IF_NOT_EXIST")
-
-        val appCfg = Bundle().apply {
-          putString("PACKAGE_NAME", appContext.packageName)
-          putStringArray("ACTIVITY_LIST", arrayOf("*"))
-        }
-        putParcelableArray("APP_LIST", arrayOf(appCfg))
-
-        val barcodeCfg = Bundle().apply {
-          putString("PLUGIN_NAME", "BARCODE")
-          putString("RESET_CONFIG", "true")
-          putBundle("PARAM_LIST", Bundle().apply {
-            putString("scanner_selection", "auto")
-            putString("scanner_input_enabled", if (initialScannerEnabled) "true" else "false")
-            putString("decoder_code128", "true")
-            putString("decoder_qrcode", "true")
-            putString("decoder_datamatrix", "true")
-            putString("trigger_control_mode", "ignore")
-          })
-        }
-
-        val intentCfg = Bundle().apply {
-          putString("PLUGIN_NAME", "INTENT")
-          putString("RESET_CONFIG", "true")
-          putBundle("PARAM_LIST", Bundle().apply {
-            putString("intent_output_enabled", "true")
-            putString("intent_action", DW_INTENT_ACTION)
-            putString("intent_delivery", "BROADCAST")
-          })
-        }
-
-        putParcelableArray("PLUGIN_CONFIG", arrayOf(barcodeCfg, intentCfg))
-      }
-
-      appContext.sendBroadcast(Intent("com.symbol.datawedge.api.ACTION").apply {
-        putExtra("com.symbol.datawedge.api.SET_CONFIG", profile)
-      })
-      appContext.sendBroadcast(Intent("com.symbol.datawedge.api.ACTION").apply {
-        putExtra("com.symbol.datawedge.api.SWITCH_TO_PROFILE", DW_PROFILE)
-      })
-
-      Log.d(TAG, "DataWedge profile set: $DW_PROFILE")
-    } catch (e: Exception) {
-      Log.e(TAG, "DataWedge profile error", e)
-    }
+  private fun stopInventorySafe(r: RFIDReader?) {
+    try { if (r != null && isInventoryRunning) r.Actions.Inventory.stop() }
+    catch (_: Exception) {}
+    finally { isInventoryRunning = false }
   }
 
-  private fun setDataWedgeScannerInputEnabled(enabled: Boolean) {
-    try {
-      val barcodeCfg = Bundle().apply {
-        putString("PLUGIN_NAME", "BARCODE")
-        putString("RESET_CONFIG", "false")
-        putBundle("PARAM_LIST", Bundle().apply {
-          putString("scanner_input_enabled", if (enabled) "true" else "false")
-        })
-      }
-      val setCfg = Bundle().apply {
-        putString("PROFILE_NAME", DW_PROFILE)
-        putString("PROFILE_ENABLED", "true")
-        putString("CONFIG_MODE", "UPDATE")
-        putParcelableArray("PLUGIN_CONFIG", arrayOf(barcodeCfg))
-      }
-      appContext.sendBroadcast(Intent("com.symbol.datawedge.api.ACTION").apply {
-        putExtra("com.symbol.datawedge.api.SET_CONFIG", setCfg)
-      })
-      Log.d(TAG, "DW scanner_input_enabled=$enabled")
-    } catch (e: Exception) {
-      Log.e(TAG, "DW toggle error", e)
-    }
-  }
-
-  @SuppressLint("UnspecifiedRegisterReceiverFlag")
-  private fun registerDataWedgeReceiverIfNeeded() {
-    if (isReceiverRegistered) return
-
-    dataWedgeReceiver = object : BroadcastReceiver() {
-      override fun onReceive(ctx: Context?, intent: Intent?) {
-        if (intent?.action != DW_INTENT_ACTION) return
-        val data = intent.getStringExtra("com.symbol.datawedge.data_string")
-        if (!data.isNullOrEmpty()) {
-          postMain { channel.invokeMethod("onBarcodeScan", data) }
-        }
-      }
-    }
-
-    val filter = IntentFilter().apply {
-      addAction(DW_INTENT_ACTION)
-      addCategory(Intent.CATEGORY_DEFAULT)
-    }
-
-    try {
-      if (Build.VERSION.SDK_INT >= 33) {
-        appContext.registerReceiver(dataWedgeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-      } else {
-        appContext.registerReceiver(dataWedgeReceiver, filter)
-      }
-      isReceiverRegistered = true
-      Log.d(TAG, "Registered DataWedge receiver for $DW_INTENT_ACTION")
-    } catch (e: Exception) {
-      Log.e(TAG, "Register receiver failed", e)
-    }
-  }
-
-  private fun unregisterDataWedgeReceiverIfNeeded() {
-    if (!isReceiverRegistered) return
-    try { appContext.unregisterReceiver(dataWedgeReceiver) } catch (_: Exception) { }
-    dataWedgeReceiver = null
-    isReceiverRegistered = false
-  }
-
-  private fun dwScannerPlugin(enable: Boolean) {
-    try {
-      val i = Intent("com.symbol.datawedge.api.ACTION").apply {
-        putExtra(
-          "com.symbol.datawedge.api.SCANNER_INPUT_PLUGIN",
-          if (enable) "ENABLE_PLUGIN" else "DISABLE_PLUGIN"
-        )
-      }
-      appContext.sendBroadcast(i)
-      dwPluginEnabled = enable
-      Log.d(TAG, "DW SCANNER_INPUT_PLUGIN=${if (enable) "ENABLE" else "DISABLE"}")
-    } catch (e: Exception) {
-      Log.e(TAG, "DW plugin toggle error", e)
-      dwPluginEnabled = false
-    }
-  }
-
-  private fun dwSetTriggerControlMode(mode: String) {
-    try {
-      val barcodeCfg = Bundle().apply {
-        putString("PLUGIN_NAME", "BARCODE")
-        putString("RESET_CONFIG", "false")
-        putBundle("PARAM_LIST", Bundle().apply {
-          putString("trigger_control_mode", mode) // auto | ignore
-        })
-      }
-      val setCfg = Bundle().apply {
-        putString("PROFILE_NAME", DW_PROFILE)
-        putString("PROFILE_ENABLED", "true")
-        putString("CONFIG_MODE", "UPDATE")
-        putParcelableArray("PLUGIN_CONFIG", arrayOf(barcodeCfg))
-      }
-      appContext.sendBroadcast(Intent("com.symbol.datawedge.api.ACTION").apply {
-        putExtra("com.symbol.datawedge.api.SET_CONFIG", setCfg)
-      })
-      Log.d(TAG, "DW trigger_control_mode=$mode")
-    } catch (e: Exception) {
-      Log.e(TAG, "DW trigger_control_mode error", e)
-    }
-  }
-  //endregion
-
-  //region SCS (sled barcode)
+  //========================================================
+  //  Scanner Control SDK (SCS) – sled barcode
+  //========================================================
   private fun ensureSCSHandlerOnMain() {
     if (sdkHandler != null) return
     val sh = SDKHandler(appContext, false)
     sdkHandler = sh
 
+    // Activer tous les modes de transport possibles
     sh.dcssdkSetOperationalMode(DCSSDKDefs.DCSSDK_MODE.DCSSDK_OPMODE_BT_NORMAL)
     sh.dcssdkSetOperationalMode(DCSSDKDefs.DCSSDK_MODE.DCSSDK_OPMODE_BT_LE)
     sh.dcssdkSetOperationalMode(DCSSDKDefs.DCSSDK_MODE.DCSSDK_OPMODE_USB_CDC)
@@ -895,10 +714,11 @@ class ZebraRfidPlugin :
     val list = ArrayList<DCSScannerInfo>()
     sh.dcssdkGetAvailableScannersList(list)
     if (list.isEmpty()) {
-      Log.i(TAG, "SCS: no available scanners (maybe Premium sans imager).")
+      Log.i(TAG, "SCS: no available scanners (no sled?).")
       return
     }
 
+    // Tenter de faire correspondre le sled au lecteur API3
     val api3Addr = readerDevice?.address?.normalizeBtAddr()
     val byAddr = if (!api3Addr.isNullOrBlank()) {
       list.firstOrNull { getBtAddressCompat(it)?.normalizeBtAddr() == api3Addr }
@@ -932,6 +752,7 @@ class ZebraRfidPlugin :
     }
   }
 
+  // -- IDcsSdkApiDelegate --
   override fun dcssdkEventScannerAppeared(availableScanner: DCSScannerInfo?) {
     Log.i(TAG, "SCS: scanner appeared: ${availableScanner?.scannerName}")
   }
@@ -961,9 +782,10 @@ class ZebraRfidPlugin :
   override fun dcssdkEventImage(imageData: ByteArray, fromScannerID: Int) {}
   override fun dcssdkEventVideo(videoFrame: ByteArray, fromScannerID: Int) {}
   override fun dcssdkEventAuxScannerAppeared(newTopology: DCSScannerInfo?, auxScanner: DCSScannerInfo?) {}
-  //endregion
 
-  //region Modes & routing
+  //========================================================
+  //  Modes & routing (RFID / SCS uniquement)
+  //========================================================
   private var currentMode: String = "OFF"
 
   private fun setModeInternal(mode: String) {
@@ -971,80 +793,41 @@ class ZebraRfidPlugin :
     currentMode = m
 
     if (!isActive) {
-      setDataWedgeScannerInputEnabled(false)
-      dwSetTriggerControlMode("ignore")
-      dwScannerPlugin(false)
+      // inactif -> s'assurer que tout est arrêté
+      stopInventorySafe(reader)
       runOnMainAndWait { scsTerminateSessionOnMain() }
       return
     }
-    applyBarcodeRoutingForCurrentMode()
+    applyRoutingForCurrentMode()
   }
 
-  private fun applyBarcodeRoutingForCurrentMode() {
+  private fun applyRoutingForCurrentMode() {
     if (!isActive) return
     when (currentMode) {
       "OFF" -> {
-        setDataWedgeScannerInputEnabled(false)
-        dwSetTriggerControlMode("ignore")
-        dwScannerPlugin(false)
+        stopInventorySafe(reader)
         runOnMainAndWait { scsTerminateSessionOnMain() }
       }
       "RFID" -> {
-        setDataWedgeScannerInputEnabled(false)
-        dwSetTriggerControlMode("ignore")
-        dwScannerPlugin(false)
+        // RFID only: pas de session SCS
         runOnMainAndWait { scsTerminateSessionOnMain() }
+        // L’inventaire est démarré via trigger (voir configureRfid)
       }
       "BARCODE" -> {
+        // Barcode only via SCS
         stopInventorySafe(reader)
         runOnMainAndWait { ensureSCSHandlerOnMain(); scsEnsureSessionOnMain() }
-        dwSetTriggerControlMode("auto")
-        dwScannerPlugin(true)
-        setDataWedgeScannerInputEnabled(true)
       }
       "BARCODE_RFID" -> {
-        // on garde DataWedge actif ET on autorise RFID sur la gâchette
+        // Les deux: inventaire via trigger + barcode via SCS
         runOnMainAndWait { ensureSCSHandlerOnMain(); scsEnsureSessionOnMain() }
-        dwSetTriggerControlMode("auto")
-        dwScannerPlugin(true)
-        setDataWedgeScannerInputEnabled(true)
       }
     }
   }
-  //endregion
 
-  //region Batch-mode helpers
-  private fun isBatchModeError(e: OperationFailureException): Boolean {
-    val s = (e.statusDescription ?: "") + " " + (e.vendorMessage ?: "")
-    val up = s.uppercase()
-    return up.contains("BATCHMODE") || up.contains("BATCH_MODE") || up.contains("RFID_BATCHMODE_IN_PROGRESS")
-  }
-
-  private fun handleBatchModeAfterConnect(r: RFIDReader) {
-    try {
-      try { r.Actions.Inventory.stop() } catch (_: Exception) {}
-      SystemClock.sleep(120)
-      try { r.Actions.getBatchedTags() } catch (_: Exception) {}
-      SystemClock.sleep(80)
-      try {
-        try { r.Actions.purgeTags() } catch (_: NoSuchMethodError) {
-          try { r.Actions.javaClass.getMethod("purgeBatchedTags").invoke(r.Actions) } catch (_: Exception) {}
-        }
-      } catch (_: Exception) {}
-      SystemClock.sleep(80)
-    } catch (ex: Exception) {
-      Log.w(TAG, "Batch-mode post-connect cleanup failed: ${ex.message}")
-    }
-  }
-  //endregion
-
-  //region Cleanup / Utils
-  private fun stopInventorySafe(r: RFIDReader?) {
-    try { if (r != null && isInventoryRunning) r.Actions.Inventory.stop() }
-    catch (_: Exception) {}
-    finally { isInventoryRunning = false }
-  }
-
+  //========================================================
+  //  Cleanup / Utils
+  //========================================================
   private fun cleanupAll() {
     // SCS
     try {
@@ -1060,7 +843,6 @@ class ZebraRfidPlugin :
         try { rfidListener?.let { r.Events.removeEventsListener(it) } } catch (_: Exception) {}
         rfidListener = null
         stopInventorySafe(r)
-        try { r.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true) } catch (_: Exception) {}
         try { if (r.isConnected) r.disconnect() } catch (_: Exception) {}
       }
       readers?.Dispose()
@@ -1097,17 +879,18 @@ class ZebraRfidPlugin :
 
   private fun String.normalizeBtAddr(): String =
     this.replace(":", "").replace("-", "").trim().lowercase()
-  //endregion
 }
+// ====== /class ZebraRfidPlugin ======
 
-/* ================================
-   Helpers top-level
-   ================================= */
 
+// -----------------------
+// Top-level helpers
+// -----------------------
 private class NoReaderException(msg: String): Exception(msg)
 private class PreferredNotFoundException(msg: String): Exception(msg)
 
-private fun getBtAddressCompat(info: DCSScannerInfo): String? {
+// Récupération (best-effort) de l'adresse BT d'un scanner SCS
+private fun getBtAddressCompat(info: com.zebra.scannercontrol.DCSScannerInfo): String? {
   return try {
     val f1 = info.javaClass.getDeclaredField("bluetoothAddress"); f1.isAccessible = true; (f1.get(info) as? String)
   } catch (_: Exception) {
