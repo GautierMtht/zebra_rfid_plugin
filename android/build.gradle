@@ -1,44 +1,26 @@
+plugins {
+    id "com.android.library"
+    id "org.jetbrains.kotlin.android"
+}
+
 group = "com.devx.zebra_rfid_plugin"
 version = "1.0-SNAPSHOT"
 
-buildscript {
-    ext.kotlin_version = "2.1.0"
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
-    }
-}
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        flatDir {
-            dirs("libs")
-        }
-    }
-}
-
-apply plugin: "com.android.library"
-apply plugin: "kotlin-android"
-
 android {
     namespace = "com.devx.zebra_rfid_plugin"
-
     compileSdk = 35
+
+    defaultConfig {
+        minSdk = 26
+        consumerProguardFiles "consumer-rules.pro"
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11
+        jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
     sourceSets {
@@ -46,48 +28,43 @@ android {
         test.java.srcDirs += "src/test/kotlin"
     }
 
-    defaultConfig {
-        minSdk = 26
-    }
-
     testOptions {
         unitTests.all {
             useJUnitPlatform()
-
             testLogging {
-               events "passed", "skipped", "failed", "standardOut", "standardError"
-               outputs.upToDateWhen {false}
-               showStandardStreams = true
+                events "passed", "skipped", "failed", "standardOut", "standardError"
+                outputs.upToDateWhen { false }
+                showStandardStreams = true
             }
         }
     }
 }
 
 dependencies {
+    // AndroidX
+    implementation("androidx.core:core:1.16.0")
 
-    // AndroidX core library required for ActivityCompat and other support features
-    implementation 'androidx.core:core:1.16.0'
+    // --- Zebra API3 + Scanner Control AARs as direct FILE deps (no repositories needed) ---
+    // (We point straight at the files in this module’s libs/ dir)
+    implementation(files("libs/API3_ASCII-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_CMN-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_INTERFACE-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_LLRP-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_NGE-Transportrelease-2.0.4.190.aar"))
+    implementation(files("libs/API3_NGE-protocolrelease-2.0.4.190.aar"))
+    implementation(files("libs/API3_NGEUSB-Transportrelease-2.0.4.190.aar"))
+    implementation(files("libs/API3_READER-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_TRANSPORT-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_ZIOTC-release-2.0.4.190.aar"))
+    implementation(files("libs/API3_ZIOTCTRANSPORT-release-2.0.4.190.aar"))
 
-    // Zebra RFID API3 libraries (provided in /libs directory)
-    implementation(name: 'API3_ASCII-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_CMN-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_INTERFACE-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_LLRP-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_NGE-Transportrelease-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_NGE-protocolrelease-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_NGEUSB-Transportrelease-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_READER-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_TRANSPORT-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_ZIOTC-release-2.0.4.190', ext: 'aar')
-    implementation(name: 'API3_ZIOTCTRANSPORT-release-2.0.4.190', ext: 'aar')
+    // Scanner Control SDK (SCS)
+    api(files("libs/BarcodeScannerLibrary-release-17.aar"))
 
-    // Zebra Scanner Control SDK (SCS): exposes the IDcsSdkApiDelegate interface transitively
-    api(name: 'BarcodeScannerLibrary-release-17', ext: 'aar')
+    // (Optional ASCII SDKs — left commented)
+    // implementation(files("libs/rfidhostlib.aar"))
+    // implementation(files("libs/rfidseriallib.aar"))
 
-    // ASCII SDK (RFD8500): not used with current implementation
-    // implementation(name: 'rfidhostlib', ext: 'aar')
-    // implementation(name: 'rfidseriallib', ext: 'aar')
-
-    testImplementation "org.jetbrains.kotlin:kotlin-test"
-    testImplementation "org.mockito:mockito-core:5.0.0"
+    testImplementation("org.jetbrains.kotlin:kotlin-test")
+    testImplementation("org.mockito:mockito-core:5.0.0")
 }
